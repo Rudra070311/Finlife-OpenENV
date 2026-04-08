@@ -1,3 +1,12 @@
+---
+title: FinLife-OpenEnv
+emoji: 💰
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: true
+---
+
 # FinLife-OpenEnv: Real-World Portfolio Management
 
 A complete OpenEnv environment for training AI agents on personal financial portfolio management.
