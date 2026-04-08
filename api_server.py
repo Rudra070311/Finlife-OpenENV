@@ -6,7 +6,7 @@ REST API for OpenEnv spec compliance with step()/reset()/state() endpoints
 import sys
 import os
 script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(script_dir, 'src'))
+sys.path.insert(0, script_dir)
 
 import json
 import logging
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 env = None
 current_task = "wealth_accumulation"
 episode_data = {}
+env_config = EnvConfig()  # Create instance of EnvConfig
 
 app = FastAPI(title="FinLife-OpenEnv", version="2.0")
 
@@ -80,7 +81,7 @@ async def reset(request: ResetRequest = None) -> Dict[str, Any]:
     logger.info(f"Resetting environment for task: {current_task}")
     
     # Initialize environment
-    env = EnhancedFinLifeEnv(config=EnvConfig.env, use_historical_data=True)
+    env = EnhancedFinLifeEnv(config=env_config, use_historical_data=True)
     obs = env.reset()
     
     # Reset episode tracking

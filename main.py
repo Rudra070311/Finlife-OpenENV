@@ -1,9 +1,9 @@
 import sys
 import os
 script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(script_dir, 'src'))
+sys.path.insert(0, script_dir)
 
-from config import config
+from app.config import Config
 
 from app.environment import FinLifeEnv
 from app.models.action import Action
@@ -11,6 +11,8 @@ from app.models.action import Action
 from app.logic.graders import grade_easy, grade_medium, grade_hard
 from app.reward import compute_reward
 
+
+config = Config()
 
 def policy(obs):
     return Action(
