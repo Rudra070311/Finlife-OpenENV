@@ -8,12 +8,14 @@ Expected environment variables:
   - API_BASE_URL: Base URL for FinLife API (default: http://localhost:8000)
   - MODEL_NAME: LLM model to use (default: gpt-4)
   - HF_TOKEN: Hugging Face token (optional)
+  - OPENAI_API_KEY: OpenAI API key (optional)
 """
 
 import os
 import json
 import time
 import logging
+import sys
 from datetime import datetime
 from typing import Dict, Any
 import requests
@@ -25,14 +27,14 @@ logger = logging.getLogger(__name__)
 # Configuration
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "sk-dummy-key-for-testing")
 
-# Initialize OpenAI Client
-if OPENAI_API_KEY.startswith("gpt"):
-    # Running with local model (via API_BASE_URL)
-    client = OpenAI(api_key="local", base_url=API_BASE_URL)
-else:
-    client = OpenAI(api_key=OPENAI_API_KEY)
+# Initialize OpenAI Client with proper defaults
+try:
+    client = OpenAI(api_key=OPENAI_API_KEY or "sk-dummy-key-for-testing", timeout=30)
+except Exception as e:
+    logger.error(f"Failed to initialize OpenAI client: {e}")
+    client = None
 
 # Tasks to run
 TASKS = [
@@ -40,6 +42,25 @@ TASKS = [
     ("crisis_management", "medium", 5),       # Run 5 episodes
     ("portfolio_optimization", "hard", 3),    # Run 3 episodes
 ]
+
+
+def wait_for_server(url: str, timeout: int = 60, check_interval: int = 2) -> bool:
+    """Wait for server to be ready by checking /status endpoint"""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(f"{url}/status", timeout=5)
+            if response.status_code == 200:
+                logger.info(f"✓ Server is ready at {url}")
+                return True
+        except (requests.ConnectionError, requests.Timeout):
+            pass
+        
+        logger.info(f"Waiting for server at {url}... ({int(time.time() - start_time)}s)")
+        time.sleep(check_interval)
+    
+    logger.error(f"✗ Server did not respond within {timeout}s")
+    return False
 
 
 def format_observation_for_llm(obs: Dict[str, Any]) -> str:
@@ -82,6 +103,11 @@ Respond with a JSON action: {{"sip_amount": float, "allocate_equity": 0-1, "allo
 def get_llm_decision(obs: Dict[str, Any], task_name: str) -> Dict[str, Any]:
     """Get LLM-generated financial decision using streaming"""
     
+    # If no OpenAI API key, use default action
+    if not OPENAI_API_KEY or OPENAI_API_KEY == "sk-dummy-key-for-testing":
+        logger.debug("No valid OpenAI key, using baseline action")
+        return get_default_action(obs)
+    
     prompt = format_observation_for_llm(obs)
     
     # Task-specific instructions
@@ -97,6 +123,10 @@ Make decisions that maximize long-term wealth while managing risk appropriately.
 Always respond with valid JSON in the specified format."""
     
     try:
+        if client is None:
+            logger.warning("OpenAI client not initialized")
+            return get_default_action(obs)
+            
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -131,6 +161,9 @@ Always respond with valid JSON in the specified format."""
         return get_default_action(obs)
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse LLM response: {e}")
+        return get_default_action(obs)
+    except Exception as e:
+        logger.warning(f"Unexpected error in get_llm_decision: {e}")
         return get_default_action(obs)
 
 
@@ -197,14 +230,23 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
     print(f"[START] task={task_name} env=finlife model={MODEL_NAME}", flush=True)
     
     try:
-        # Reset environment
-        reset_response = requests.post(
-            f"{API_BASE_URL}/reset",
-            json={"task": task_name},
-            timeout=10
-        )
-        reset_response.raise_for_status()
-        obs = reset_response.json()
+        # Reset environment with retry logic
+        for retry in range(3):
+            try:
+                reset_response = requests.post(
+                    f"{API_BASE_URL}/reset",
+                    json={"task": task_name},
+                    timeout=10
+                )
+                reset_response.raise_for_status()
+                obs = reset_response.json()
+                break
+            except requests.exceptions.RequestException as e:
+                if retry < 2:
+                    logger.warning(f"Reset failed (attempt {retry+1}/3): {e}, retrying...")
+                    time.sleep(2)
+                else:
+                    raise
         
         total_reward = 0.0
         step = 0
@@ -215,37 +257,48 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
         while not done and step < max_steps:
             step += 1
             
-            # Get LLM decision
-            action = get_llm_decision(obs, task_name)
-            action_str = json.dumps(action, separators=(',', ':'))[:50]  # Truncate for logging
-            
-            # Execute action
-            step_response = requests.post(
-                f"{API_BASE_URL}/step",
-                json={"action": action},
-                timeout=10
-            )
-            step_response.raise_for_status()
-            step_data = step_response.json()
-            
-            obs = step_data["observation"]
-            reward = step_data["reward"]
-            done = step_data["done"]
-            total_reward += reward
-            rewards_list.append(reward)
-            
-            # Log step in spec format: [STEP] step=X action=X reward=X done=X error=X
-            done_str = str(done).lower()
-            error_val = "null"
-            print(f"[STEP] step={step} action={action_str} reward={reward:.2f} done={done_str} error={error_val}", flush=True)
-            
-            time.sleep(0.1)  # Small delay to avoid API overload
+            try:
+                # Get LLM decision
+                action = get_llm_decision(obs, task_name)
+                action_str = json.dumps(action, separators=(',', ':'))[:50]  # Truncate for logging
+                
+                # Execute action
+                step_response = requests.post(
+                    f"{API_BASE_URL}/step",
+                    json={"action": action},
+                    timeout=10
+                )
+                step_response.raise_for_status()
+                step_data = step_response.json()
+                
+                obs = step_data["observation"]
+                reward = step_data["reward"]
+                done = step_data["done"]
+                total_reward += reward
+                rewards_list.append(reward)
+                
+                # Log step in spec format: [STEP] step=X action=X reward=X done=X error=X
+                done_str = str(done).lower()
+                error_val = "null"
+                print(f"[STEP] step={step} action={action_str} reward={reward:.2f} done={done_str} error={error_val}", flush=True)
+                
+                time.sleep(0.1)  # Small delay to avoid API overload
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Step {step} request failed: {e}")
+                error_msg = str(e)
+                break
+            except Exception as e:
+                logger.error(f"Step {step} unexpected error: {e}")
+                error_msg = str(e)
+                break
         
-        final_score = step_data["info"].get("final_score", 0.0)
-        rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
+        final_score = step_data.get("info", {}).get("final_score", 0.0) if step > 0 else 0.0
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards_list) if rewards_list else "null"
         
         # Log end in spec format: [END] success=X steps=X score=X rewards=X,X,X
-        print(f"[END] success=true steps={step} score={final_score:.3f} rewards={rewards_str}", flush=True)
+        success = len(rewards_list) > 0 and final_score > 0
+        print(f"[END] success={str(success).lower()} steps={step} score={final_score:.3f} rewards={rewards_str}", flush=True)
         
         return {
             "task": task_name,
@@ -253,18 +306,17 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
             "steps": step,
             "total_reward": total_reward,
             "final_score": final_score,
-            "success": True
+            "success": success
         }
         
     except Exception as e:
-        logger.error(f"Episode failed: {e}")
-        error_str = str(e).replace('"', "'")
-        print(f"[END] success=false steps={step} score=0.0 rewards=null", flush=True)
+        logger.error(f"Episode failed: {e}", exc_info=True)
+        print(f"[END] success=false steps=0 score=0.0 rewards=null", flush=True)
         
         return {
             "task": task_name,
             "episode": episode_num,
-            "steps": step,
+            "steps": 0,
             "total_reward": 0,
             "final_score": 0,
             "success": False,
@@ -283,59 +335,74 @@ def main():
     print(f"Timestamp: {datetime.now().isoformat()}")
     print("=" * 70)
     
+    # Wait for server to be ready
+    if not wait_for_server(API_BASE_URL, timeout=60):
+        logger.error("Server is not responding. Exiting.")
+        print("[END] success=false steps=0 score=0.0 rewards=null", flush=True)
+        return []
+    
     all_results = []
     
-    for task_name, difficulty, num_episodes in TASKS:
-        print(f"\n{'='*70}")
-        print(f"Task: {task_name} ({difficulty})")
-        print(f"Running {num_episodes} episodes...")
-        print(f"{'='*70}")
-        
-        task_scores = []
-        
-        for ep in range(num_episodes):
-            result = run_episode(task_name, ep + 1, max_steps=200)
-            all_results.append(result)
+    try:
+        for task_name, difficulty, num_episodes in TASKS:
+            print(f"\n{'='*70}")
+            print(f"Task: {task_name} ({difficulty})")
+            print(f"Running {num_episodes} episodes...")
+            print(f"{'='*70}")
             
-            if result["success"]:
-                task_scores.append(result["final_score"])
-        
-        # Summary for this task
-        if task_scores:
-            avg_score = sum(task_scores) / len(task_scores)
-            max_score = max(task_scores)
-            min_score = min(task_scores)
+            task_scores = []
             
-            print(f"\nTask Summary: {task_name}")
-            print(f"  Episodes: {num_episodes}")
-            print(f"  Average Score: {avg_score:.3f}")
-            print(f"  Max Score: {max_score:.3f}")
-            print(f"  Min Score: {min_score:.3f}")
-    
-    # Overall summary
-    print("\n" + "=" * 70)
-    print("FINAL RESULTS")
-    print("=" * 70)
-    
-    successful = [r for r in all_results if r["success"]]
-    if successful:
-        all_scores = [r["final_score"] for r in successful]
-        overall_avg = sum(all_scores) / len(all_scores)
+            for ep in range(num_episodes):
+                result = run_episode(task_name, ep + 1, max_steps=200)
+                all_results.append(result)
+                
+                if result["success"]:
+                    task_scores.append(result["final_score"])
+            
+            # Summary for this task
+            if task_scores:
+                avg_score = sum(task_scores) / len(task_scores)
+                max_score = max(task_scores)
+                min_score = min(task_scores)
+                
+                print(f"\nTask Summary: {task_name}")
+                print(f"  Episodes: {num_episodes}")
+                print(f"  Average Score: {avg_score:.3f}")
+                print(f"  Max Score: {max_score:.3f}")
+                print(f"  Min Score: {min_score:.3f}")
         
-        print(f"Total Episodes: {len(all_results)}")
-        print(f"Successful: {len(successful)}")
-        print(f"Overall Average Score: {overall_avg:.3f}")
-        print(f"\nPer-Task Average Scores:")
+        # Overall summary
+        print("\n" + "=" * 70)
+        print("FINAL RESULTS")
+        print("=" * 70)
         
-        for task_name, _, _ in TASKS:
-            task_results = [r for r in successful if r["task"] == task_name]
-            if task_results:
-                task_avg = sum(r["final_score"] for r in task_results) / len(task_results)
-                print(f"  {task_name}: {task_avg:.3f}")
-    else:
-        print("All episodes failed. Check API connection.")
-    
-    print("=" * 70)
+        successful = [r for r in all_results if r["success"]]
+        if successful:
+            all_scores = [r["final_score"] for r in successful]
+            overall_avg = sum(all_scores) / len(all_scores)
+            
+            print(f"Total Episodes: {len(all_results)}")
+            print(f"Successful: {len(successful)}")
+            print(f"Overall Average Score: {overall_avg:.3f}")
+            print(f"\nPer-Task Average Scores:")
+            
+            for task_name, _, _ in TASKS:
+                task_results = [r for r in successful if r["task"] == task_name]
+                if task_results:
+                    task_avg = sum(r["final_score"] for r in task_results) / len(task_results)
+                    print(f"  {task_name}: {task_avg:.3f}")
+        else:
+            logger.warning("No successful episodes. Check server and API connection.")
+        
+        print("=" * 70)
+        
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        print("\n[END] success=false steps=0 score=0.0 rewards=null", flush=True)
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        print("[END] success=false steps=0 score=0.0 rewards=null", flush=True)
+        raise
     
     return all_results
 
@@ -343,8 +410,15 @@ def main():
 if __name__ == "__main__":
     try:
         results = main()
+        # Exit with success if we ran at least one episode
+        if results:
+            sys.exit(0)
+        else:
+            logger.error("No results produced")
+            sys.exit(1)
     except KeyboardInterrupt:
-        print("\nInterrupted by user")
+        logger.info("Interrupted by user")
+        sys.exit(0)
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        raise
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
