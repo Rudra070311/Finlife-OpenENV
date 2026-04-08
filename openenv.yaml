@@ -1,0 +1,61 @@
+name: FinLife-OpenEnv
+version: 1.0.0
+description: Real-world portfolio management environment for AI training
+author: FinLife Team
+spec_version: 0.1
+
+tasks:
+  - id: wealth_accumulation
+    name: wealth_accumulation
+    difficulty: easy
+    description: Build wealth over time with balanced strategy
+    grader: WealthAccumulationGrader
+  - id: crisis_management
+    name: crisis_management
+    difficulty: medium
+    description: Preserve capital during market crashes
+    grader: CrisisManagementGrader
+  - id: portfolio_optimization
+    name: portfolio_optimization
+    difficulty: hard
+    description: Multi-objective optimization under constraints
+    grader: PortfolioOptimizationGrader
+
+API:
+  version: 1.0
+  endpoints:
+    - path: /reset
+      method: POST
+      description: Initialize a new episode
+    - path: /step
+      method: POST
+      description: Execute an action
+    - path: /state
+      method: GET
+      description: Get current observation
+    - path: /status
+      method: GET
+      description: Health check endpoint
+    - path: /tasks
+      method: GET
+      description: List available tasks
+
+action_space:
+  type: continuous
+  shape: [5]
+  bounds:
+    - [0, 10000]
+    - [0, 1]
+    - [0, 1]
+    - [0, 1]
+    - [0, 1]
+  
+observation_space:
+  type: continuous
+  shape: [25]
+  bounds:
+    - [18, 75]
+    - [0, 1000000]
+    - [0, 500000]
+    - [0, 5000000]
+    - [0, 3000000]
