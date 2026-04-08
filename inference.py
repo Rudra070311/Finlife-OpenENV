@@ -194,7 +194,7 @@ def validate_action(action: Dict[str, Any]) -> Dict[str, Any]:
 def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[str, Any]:
     """Run single episode and return final score"""
     
-    print(f"\n[START] task={task_name} episode={episode_num}")
+    print(f"[START] task={task_name} env=finlife model={MODEL_NAME}", flush=True)
     
     try:
         # Reset environment
@@ -209,12 +209,15 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
         total_reward = 0.0
         step = 0
         done = False
+        rewards_list = []
+        error_msg = None
         
         while not done and step < max_steps:
             step += 1
             
             # Get LLM decision
             action = get_llm_decision(obs, task_name)
+            action_str = json.dumps(action, separators=(',', ':'))[:50]  # Truncate for logging
             
             # Execute action
             step_response = requests.post(
@@ -229,15 +232,20 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
             reward = step_data["reward"]
             done = step_data["done"]
             total_reward += reward
+            rewards_list.append(reward)
             
-            # Log step progress
-            print(f"[STEP] task={task_name} episode={episode_num} step={step} reward={reward:.2f} portfolio={obs['portfolio_value']:,.0f} regime={obs['market_regime']}")
+            # Log step in spec format: [STEP] step=X action=X reward=X done=X error=X
+            done_str = str(done).lower()
+            error_val = "null"
+            print(f"[STEP] step={step} action={action_str} reward={reward:.2f} done={done_str} error={error_val}", flush=True)
             
             time.sleep(0.1)  # Small delay to avoid API overload
         
         final_score = step_data["info"].get("final_score", 0.0)
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards_list)
         
-        print(f"[END] task={task_name} episode={episode_num} steps={step} total_reward={total_reward:.2f} final_score={final_score:.3f}")
+        # Log end in spec format: [END] success=X steps=X score=X rewards=X,X,X
+        print(f"[END] success=true steps={step} score={final_score:.3f} rewards={rewards_str}", flush=True)
         
         return {
             "task": task_name,
@@ -250,12 +258,13 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
         
     except Exception as e:
         logger.error(f"Episode failed: {e}")
-        print(f"[END] task={task_name} episode={episode_num} steps=0 total_reward=0 final_score=0 error={str(e)}")
+        error_str = str(e).replace('"', "'")
+        print(f"[END] success=false steps={step} score=0.0 rewards=null", flush=True)
         
         return {
             "task": task_name,
             "episode": episode_num,
-            "steps": 0,
+            "steps": step,
             "total_reward": 0,
             "final_score": 0,
             "success": False,
