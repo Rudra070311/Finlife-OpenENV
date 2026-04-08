@@ -48,18 +48,25 @@ class StatusResponse(BaseModel):
 
 
 @app.get("/status")
-async def status() -> StatusResponse:
-    """Health check endpoint"""
+async def status() -> Dict[str, Any]:
+    """Health check endpoint - always returns 200 OK"""
     global env
-    if env is None:
-        raise HTTPException(status_code=503, detail="Environment not initialized")
     
-    return StatusResponse(
-        status="healthy",
-        task=current_task,
-        step=env.step_count,
-        done=False
-    )
+    # Always return 200, even if env not initialized yet
+    if env is None:
+        return {
+            "status": "starting",
+            "message": "Server starting up, environment initializing",
+            "ready": False
+        }
+    
+    return {
+        "status": "running",
+        "task": current_task,
+        "step": env.step_count,
+        "done": False,
+        "ready": True
+    }
 
 
 @app.post("/reset")

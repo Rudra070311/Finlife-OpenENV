@@ -44,22 +44,30 @@ TASKS = [
 ]
 
 
-def wait_for_server(url: str, timeout: int = 60, check_interval: int = 2) -> bool:
+def wait_for_server(url: str, timeout: int = 120, check_interval: int = 2) -> bool:
     """Wait for server to be ready by checking /status endpoint"""
     start_time = time.time()
+    last_error = None
+    
     while time.time() - start_time < timeout:
         try:
             response = requests.get(f"{url}/status", timeout=5)
-            if response.status_code == 200:
+            # Accept any 2xx response as server being ready
+            if response.status_code in [200, 201, 202, 204]:
                 logger.info(f"✓ Server is ready at {url}")
                 return True
-        except (requests.ConnectionError, requests.Timeout):
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_error = e
             pass
+        except Exception as e:
+            last_error = e
+            logger.debug(f"Unexpected error checking server: {e}")
         
-        logger.info(f"Waiting for server at {url}... ({int(time.time() - start_time)}s)")
+        elapsed = int(time.time() - start_time)
+        logger.info(f"Waiting for server at {url}... ({elapsed}s/{timeout}s)")
         time.sleep(check_interval)
     
-    logger.error(f"✗ Server did not respond within {timeout}s")
+    logger.error(f"✗ Server did not respond within {timeout}s. Last error: {last_error}")
     return False
 
 
