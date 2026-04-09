@@ -244,6 +244,13 @@ def validate_action(action: Dict[str, Any]) -> Dict[str, Any]:
     return action
 
 
+def clamp_score(score: float) -> float:
+    """Ensure score is strictly between 0 and 1 (exclusive)"""
+    # Validator requires scores in open interval (0, 1), not closed [0, 1]
+    # Clamp to (0.001, 0.999) to ensure strict bounds
+    return max(0.001, min(0.999, float(score)))
+
+
 def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[str, Any]:
     """Run single episode and return final score"""
     
@@ -312,6 +319,7 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
                 break
         
         final_score = step_data.get("info", {}).get("final_score", 0.0) if step > 0 else 0.0
+        final_score = clamp_score(final_score)  # Ensure score is in valid range (0, 1)
         rewards_str = ",".join(f"{r:.2f}" for r in rewards_list) if rewards_list else "null"
         
         # Log end in spec format: [END] success=X steps=X score=X rewards=X,X,X
@@ -329,14 +337,15 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
         
     except Exception as e:
         logger.error(f"Episode failed: {e}", exc_info=True)
-        print(f"[END] success=false steps=0 score=0.0 rewards=null", flush=True)
+        error_score = clamp_score(0.0)  # Error cases get minimum valid score
+        print(f"[END] success=false steps=0 score={error_score:.3f} rewards=null", flush=True)
         
         return {
             "task": task_name,
             "episode": episode_num,
             "steps": 0,
             "total_reward": 0,
-            "final_score": 0,
+            "final_score": error_score,
             "success": False,
             "error": str(e)
         }
