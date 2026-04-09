@@ -25,21 +25,41 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 # Configuration
-# IMPORTANT: API_BASE_URL is the FinLife API endpoint (localhost:7860 in Docker)
-# The LLM endpoint (if any) is configured via OPENAI_API_KEY
-API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:7860")
+# The validator injects API_BASE_URL (LLM proxy) and API_KEY (LLM auth)
+# We need to figure out which is which based on content
+API_BASE_URL_ENV = os.environ.get("API_BASE_URL", "")
+API_KEY_ENV = os.environ.get("API_KEY", "")
+OPENAI_API_KEY_ENV = os.environ.get("OPENAI_API_KEY", "")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-USE_LLM = OPENAI_API_KEY and len(OPENAI_API_KEY) > 5  # Must be a valid API key, not empty
 
-# Initialize OpenAI Client with short timeouts if key is available
+# Determine LLM configuration
+# Priority: API_KEY > OPENAI_API_KEY
+# Base URL: API_BASE_URL (from validator)
+if API_KEY_ENV and len(API_KEY_ENV) > 5:
+    # Validator injected both API_BASE_URL and API_KEY - use them for LLM
+    LLM_API_BASE_URL = API_BASE_URL_ENV or "http://localhost:8000"
+    LLM_API_KEY = API_KEY_ENV
+    FinLife_API_URL = "http://localhost:7860"  # Local FinLife API
+    USE_LLM = True
+else:
+    # Fallback: use OPENAI_API_KEY if available
+    LLM_API_BASE_URL = API_BASE_URL_ENV or "http://localhost:8000"
+    LLM_API_KEY = OPENAI_API_KEY_ENV
+    FinLife_API_URL = "http://localhost:7860"
+    USE_LLM = bool(LLM_API_KEY and len(LLM_API_KEY) > 5)
+
+# Initialize OpenAI Client pointing to provided LLM proxy with provided credentials
 client = None
 if USE_LLM:
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY, timeout=10)
+        client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_API_BASE_URL, timeout=10)
+        logger.info(f"✓ Initialized LLM client: base_url={LLM_API_BASE_URL}, model={MODEL_NAME}")
     except Exception as e:
-        logger.warning(f"Failed to initialize OpenAI client: {e} - will use baseline strategy")
+        logger.warning(f"Failed to initialize LLM client: {e}")
+        client = None
         USE_LLM = False
+else:
+    logger.info("No LLM credentials provided, will use baseline strategy only")
 
 # Tasks to run
 TASKS = [
@@ -234,7 +254,7 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
         for retry in range(3):
             try:
                 reset_response = requests.post(
-                    f"{API_BASE_URL}/reset",
+                    f"{FinLife_API_URL}/reset",
                     json={"task": task_name},
                     timeout=10
                 )
@@ -264,7 +284,7 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
                 
                 # Execute action
                 step_response = requests.post(
-                    f"{API_BASE_URL}/step",
+                    f"{FinLife_API_URL}/step",
                     json={"action": action},
                     timeout=10
                 )
@@ -330,15 +350,14 @@ def main():
     print("=" * 70)
     print("FinLife-OpenEnv Baseline Inference")
     print("=" * 70)
-    print(f"API: {API_BASE_URL}")
+    print(f"API: {FinLife_API_URL}")
     print(f"Model: {MODEL_NAME}")
     print(f"LLM Available: {USE_LLM}")
     print(f"Timestamp: {datetime.now().isoformat()}")
     print("=" * 70)
     
     # Only wait for FinLife API (localhost), not for LLM provider
-    if not "litellm" in API_BASE_URL and not API_BASE_URL.startswith("https://"):
-        if not wait_for_server(API_BASE_URL, timeout=30):
+    if not wait_for_server(FinLife_API_URL, timeout=30):
             logger.error("FinLife API server is not responding.")
             print("[END] success=false steps=0 score=0.0 rewards=null", flush=True)
             return []
