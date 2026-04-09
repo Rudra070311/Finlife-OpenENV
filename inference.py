@@ -63,9 +63,9 @@ else:
 
 # Tasks to run
 TASKS = [
-    ("wealth_accumulation", "easy", 10),      # Run 10 episodes
-    ("crisis_management", "medium", 5),       # Run 5 episodes
-    ("portfolio_optimization", "hard", 3),    # Run 3 episodes
+    ("wealth_accumulation", "easy", 3),       # Run 3 episodes (reduced from 10)
+    ("crisis_management", "medium", 2),       # Run 2 episodes (reduced from 5)
+    ("portfolio_optimization", "hard", 1),    # Run 1 episode (reduced from 3)
 ]
 
 
@@ -302,8 +302,6 @@ def run_episode(task_name: str, episode_num: int, max_steps: int = 100) -> Dict[
                 error_val = "null"
                 print(f"[STEP] step={step} action={action_str} reward={reward:.2f} done={done_str} error={error_val}", flush=True)
                 
-                time.sleep(0.1)  # Small delay to avoid API overload
-                
             except requests.exceptions.RequestException as e:
                 logger.error(f"Step {step} request failed: {e}")
                 error_msg = str(e)
@@ -374,7 +372,7 @@ def main():
             task_scores = []
             
             for ep in range(num_episodes):
-                result = run_episode(task_name, ep + 1, max_steps=200)
+                result = run_episode(task_name, ep + 1, max_steps=50)
                 all_results.append(result)
                 
                 if result["success"]:
